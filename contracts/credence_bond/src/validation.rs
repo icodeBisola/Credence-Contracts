@@ -69,20 +69,19 @@ mod tests {
     fn test_validate_bond_amount_above_maximum() {
         validate_bond_amount(MAX_BOND_AMOUNT + 1);
     }
-
-
 }
-//! Duration Validation Module
-//!
-//! Provides validation logic for bond durations including minimum and maximum limit
-//! enforcement. All bond creations must pass duration validation before proceeding.
-//!
-//! ## Constraints
-//! - **Minimum Duration**: Bonds must have a duration of at least 1 day (86_400 seconds)
-//!   to prevent trivially short bonds that offer no meaningful commitment.
-//! - **Maximum Duration**: Bonds are capped at 365 days (31_536_000 seconds) to limit
-//!   excessive lock-up risk and contract state lifetime.
-//!
+
+// Duration Validation Module
+//
+// Provides validation logic for bond durations including minimum and maximum limit
+// enforcement. All bond creations must pass duration validation before proceeding.
+//
+// ## Constraints
+// - **Minimum Duration**: Bonds must have a duration of at least 1 day (86_400 seconds)
+//   to prevent trivially short bonds that offer no meaningful commitment.
+// - **Maximum Duration**: Bonds are capped at 365 days (31_536_000 seconds) to limit
+//   excessive lock-up risk and contract state lifetime.
+//
 //! ## Error Messages
 //! - `"bond duration too short: minimum is 86400 seconds (1 day)"` — when duration < MIN
 //! - `"bond duration too long: maximum is 31536000 seconds (365 days)"` — when duration > MAX

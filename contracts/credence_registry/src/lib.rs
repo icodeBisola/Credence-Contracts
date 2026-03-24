@@ -19,6 +19,10 @@
 //! - emits events for audit trail
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, Vec};
+
+/// ERC165-equivalent interface ID for CredenceBondV1
+/// "CRD\x01" encoded as u32
+pub const IFACE_CREDENCE_BOND_V1: u32 = 0x43524401;
 pub mod idempotency;
 /// Represents a registry entry mapping an identity to their bond contract
 #[contracttype]
@@ -50,6 +54,7 @@ enum DataKey {
     IdentityToBond(Address),
     BondToIdentity(Address),
     RegisteredIdentities,
+    AllowNonInterface(Address),
 }
 
 pub mod pausable;
@@ -109,7 +114,7 @@ impl CredenceRegistry {
     ///
     /// # Events
     /// Emits `identity_registered` with the `RegistryEntry`
-    pub fn register(e: Env, identity: Address, bond_contract: Address) -> RegistryEntry {
+    pub fn register(e: Env, identity: Address, bond_contract: Address, allow_non_interface: bool) -> RegistryEntry {
         pausable::require_not_paused(&e);
         // Verify admin authorization
         let admin: Address = e
@@ -119,6 +124,21 @@ impl CredenceRegistry {
             .unwrap_or_else(|| panic!("not initialized"));
 
         admin.require_auth();
+
+        // ERC165-equivalent interface check
+        if !allow_non_interface {
+            let supported: bool = e
+                .try_invoke_contract::<bool, soroban_sdk::Error>(
+                    &bond_contract,
+                    &Symbol::new(&e, "supports_interface"),
+                    soroban_sdk::vec![&e, IFACE_CREDENCE_BOND_V1.into()],
+                )
+                .unwrap_or(Ok(false))
+                .unwrap_or(false);
+            if !supported {
+                panic!("bond contract does not support required interface");
+            }
+        }
 
         // Check if identity is already registered
         let identity_key = DataKey::IdentityToBond(identity.clone());
@@ -158,9 +178,16 @@ impl CredenceRegistry {
             .instance()
             .set(&DataKey::RegisteredIdentities, &identities);
 
+        // Store opt-out flag for audit trail
+        if allow_non_interface {
+            e.storage()
+                .instance()
+                .set(&DataKey::AllowNonInterface(bond_contract.clone()), &true);
+        }
+
         // Emit event
         e.events()
-            .publish((Symbol::new(&e, "identity_registered"),), entry.clone());
+            .publish((Symbol::new(&e, "identity_registered"),), (entry.clone(), allow_non_interface));
 
         entry
     }
@@ -422,3 +449,6 @@ mod test;
 
 #[cfg(test)]
 mod test_pausable;
+
+#[cfg(test)]
+mod test_interface;
