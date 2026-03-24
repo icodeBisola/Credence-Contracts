@@ -4,37 +4,37 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env, IntoVal, String, Symbol, Val, Vec,
 };
 
-mod early_exit_penalty;
-mod rolling_bond;
-mod tiered_bond;
 pub mod access_control;
 mod batch;
+mod early_exit_penalty;
 pub mod early_exit_penalty;
+mod emergency;
+mod events;
 #[allow(dead_code)]
 pub mod evidence;
-mod events;
-mod emergency;
 mod fees;
 pub mod governance_approval;
 #[allow(dead_code)]
 mod math;
 mod nonce;
-pub mod pausable;
-pub mod rolling_bond;
 mod parameters;
+pub mod pausable;
+mod rolling_bond;
+pub mod rolling_bond;
 mod rolling_bond;
 #[allow(dead_code)]
 mod slash_history;
 #[allow(dead_code)]
 mod slashing;
 mod tiered_bond;
-mod validation;
+mod tiered_bond;
 pub mod tiered_bond;
 mod token_integration;
+pub mod types;
+mod validation;
 mod validation;
 pub mod verifier;
 mod weighted_attestation;
-pub mod types;
 
 use crate::access_control::{
     add_verifier_role, is_verifier, remove_verifier_role, require_admin, require_verifier,
@@ -86,8 +86,8 @@ pub struct Attestation {
     pub attestation_data: String,
     pub timestamp: u64,
     pub revoked: bool,
-// Re-export batch types
-pub use batch::{BatchBondParams, BatchBondResult};
+}
+
 /// A pending cooldown withdrawal request. Created when a bond holder signals
 /// intent to withdraw; the withdrawal can only execute after the cooldown
 /// period elapses.
@@ -108,18 +108,8 @@ pub enum DataKey {
     Attestation(u64),
     AttestationCounter,
     SubjectAttestations(Address),
-    DuplicateCheck(Address, Address, String),
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum BondTier {
-    Bronze,
-    Silver,
-    Gold,
-    Platinum,
-    /// Per-identity attestation count (updated on add/revoke).
     SubjectAttestationCount(Address),
+    DuplicateCheck(Address, Address, String),
     /// Per-identity nonce for replay prevention.
     Nonce(Address),
     /// Attester stake used for weighted attestation.
@@ -159,7 +149,6 @@ pub struct CredenceBond;
 
 #[contractimpl]
 impl CredenceBond {
-    /// Initialize the contract (set admin).
     fn acquire_lock(e: &Env) {
         if Self::check_lock(e) {
             panic!("reentrancy detected");
@@ -229,14 +218,7 @@ impl CredenceBond {
     /// Set early exit penalty config (admin only). Penalty in basis points (e.g. 500 = 5%).
     pub fn set_early_exit_config(e: Env, admin: Address, treasury: Address, penalty_bps: u32) {
         pausable::require_not_paused(&e);
-        let stored_admin: Address = e
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic!("not initialized"));
         admin.require_auth();
-        if admin != stored_admin {
-            panic!("not admin");
         Self::require_admin_internal(&e, &admin);
         early_exit_penalty::set_config(&e, treasury, penalty_bps);
     }
@@ -526,35 +508,6 @@ impl CredenceBond {
 
     /// Create a bond with rolling parameters.
     pub fn create_bond_with_rolling(
-    /// Create a bond for an identity.
-    /// Transfers USDC from the identity to the contract (token must be set and approved).
-    /// Bond creation fee (if configured) is deducted and recorded for the treasury.
-    pub fn create_bond(
-        e: Env,
-        identity: Address,
-        amount: i128,
-        duration: u64,
-        is_rolling: bool,
-        notice_period: u64,
-    ) -> IdentityBond {
-        pausable::require_not_paused(&e);
-        // Validate bond amount before creating the bond
-        validation::validate_bond_amount(amount);
-        
-        // Validate bond duration is within allowed range
-        validation::validate_bond_duration(duration);
-        Self::create_bond_with_rolling(
-            e,
-            identity,
-            amount,
-            duration,
-            is_rolling,
-            notice_period_duration,
-        )
-    }
-
-    /// Create a bond with rolling parameters.
-    pub fn create_bond_with_rolling(
         e: Env,
         identity: Address,
         amount: i128,
@@ -634,7 +587,6 @@ impl CredenceBond {
         require_verifier(&e, &attester);
 
         // Verify attester is authorized
-        let is_authorized = e
         let is_authorized: bool = e
             .storage()
             .instance()
@@ -698,8 +650,6 @@ impl CredenceBond {
         attestation
     }
 
-    /// Revoke an attestation (only the original attester can revoke).
-    pub fn revoke_attestation(e: Env, attester: Address, attestation_id: u64) {
     /// Revoke an attestation (only original attester). Requires correct nonce.
     pub fn revoke_attestation(e: Env, attester: Address, attestation_id: u64, nonce: u64) {
         pausable::require_not_paused(&e);
@@ -998,6 +948,8 @@ impl CredenceBond {
 
         e.storage().instance().set(&key, &bond);
         bond
+    }
+
     pub fn slash(e: Env, admin: Address, amount: i128) -> IdentityBond {
         admin.require_auth();
         Self::require_admin_internal(&e, &admin);
@@ -1143,7 +1095,7 @@ impl CredenceBond {
                 validation::MIN_BOND_AMOUNT
             );
         }
-        
+
         let key = DataKey::Bond;
         let mut bond: IdentityBond = e
             .storage()
@@ -1151,39 +1103,19 @@ impl CredenceBond {
             .get(&key)
             .unwrap_or_else(|| panic!("no bond"));
 
-        if amount < 0 {
-            panic!("amount must be non-negative");
-        }
         bond.identity.require_auth();
 
-        // Calculate the new bonded amount after top-up
-        let new_bonded_amount = bond
-        // Perform top-up with overflow protection
-        let old_tier = tiered_bond::get_tier_for_amount(bond.bonded_amount);
-        bond.bonded_amount = bond
         // Overflow check before token transfer (CEI pattern)
         let new_bonded = bond
             .bonded_amount
             .checked_add(amount)
             .expect("top-up caused overflow");
-            
-        // Validate the new total bonded amount is within limits
-        validation::validate_bond_amount(new_bonded_amount);
-
-        // Perform top-up with overflow protection
-        let old_tier = tiered_bond::get_tier_for_amount(bond.bonded_amount);
-        bond.bonded_amount = new_bonded_amount;
-
-        token_integration::transfer_into_contract(&e, &bond.identity, amount);
 
         let old_tier = tiered_bond::get_tier_for_amount(bond.bonded_amount);
         bond.bonded_amount = new_bonded;
         let new_tier = tiered_bond::get_tier_for_amount(bond.bonded_amount);
         tiered_bond::emit_tier_change_if_needed(&e, &bond.identity, old_tier, new_tier);
         events::emit_bond_increased(&e, &bond.identity, amount, bond.bonded_amount);
-
-        let new_tier = tiered_bond::get_tier_for_amount(bond.bonded_amount);
-        tiered_bond::emit_tier_change_if_needed(&e, &bond.identity, old_tier, new_tier);
 
         e.storage().instance().set(&key, &bond);
         bond
@@ -1831,6 +1763,8 @@ mod test;
 
 #[cfg(test)]
 mod test_reentrancy;
+
+#[cfg(test)]
 mod test_attestation;
 
 #[cfg(test)]
@@ -1841,10 +1775,6 @@ mod test_attestation_types;
 
 #[cfg(test)]
 mod test_validation;
-mod test_attestation_types;
-
-#[cfg(test)]
-mod test_attestation;
 
 #[cfg(test)]
 mod test_governance_approval;
@@ -1897,9 +1827,6 @@ impl CredenceBond {
 }
 
 #[cfg(test)]
-mod test_pausable;
-
-#[cfg(test)]
 mod fuzz;
 
 #[cfg(test)]
@@ -1908,6 +1835,7 @@ mod test_duration_validation;
 #[cfg(test)]
 mod test_access_control;
 
+#[cfg(test)]
 mod test_cooldown;
 #[cfg(test)]
 mod test_events;
@@ -1916,9 +1844,11 @@ mod test_events;
 mod test_early_exit_penalty;
 
 #[cfg(test)]
-mod test_verifier;
-mod test_evidence;
 mod test_emergency;
+#[cfg(test)]
+mod test_evidence;
+#[cfg(test)]
+mod test_verifier;
 
 #[cfg(test)]
 mod test_rolling_bond;
