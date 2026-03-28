@@ -169,17 +169,21 @@ impl CredenceRegistry {
         // Store reverse mapping (bond -> identity)
         e.storage().instance().set(&bond_key, &identity);
 
-        // Add to registered identities list
+        // Add to registered identities list only if not already present.
+        // Guards against duplicate entries when a deactivated identity slot
+        // still exists in storage (fix for #139).
         let mut identities: Vec<Address> = e
             .storage()
             .instance()
             .get(&DataKey::RegisteredIdentities)
             .unwrap_or_else(|| Vec::new(&e));
 
-        identities.push_back(identity.clone());
-        e.storage()
-            .instance()
-            .set(&DataKey::RegisteredIdentities, &identities);
+        if !identities.iter().any(|a| a == identity) {
+            identities.push_back(identity.clone());
+            e.storage()
+                .instance()
+                .set(&DataKey::RegisteredIdentities, &identities);
+        }
 
         // Store opt-out flag for audit trail
         if allow_non_interface {
