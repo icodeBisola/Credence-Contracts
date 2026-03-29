@@ -171,3 +171,143 @@ fn test_only_proposer_executes() {
     client.governance_vote(&g2, &0_u64, &true);
     client.execute_slash_with_governance(&g1, &0_u64);
 }
+
+/// Tests for duplicate execution prevention (Issue #166)
+
+#[test]
+#[should_panic(expected = "proposal already executed")]
+fn test_duplicate_execution_prevented() {
+    let e = Env::default();
+    let g1 = Address::generate(&e);
+    let g2 = Address::generate(&e);
+    let (client, admin, _) = setup_with_bond_and_governance(&e, &[g1.clone(), g2.clone()], 5100, 1);
+
+    // Create and approve proposal
+    client.propose_slash(&admin, &100_i128);
+    client.governance_vote(&g1, &0_u64, &true);
+    client.governance_vote(&g2, &0_u64, &true);
+
+    // First execution should succeed
+    client.execute_slash_with_governance(&admin, &0_u64);
+
+    // Second execution attempt should panic with "proposal already executed"
+    client.execute_slash_with_governance(&admin, &0_u64);
+}
+
+#[test]
+fn test_executed_proposal_has_executed_status() {
+    let e = Env::default();
+    let g1 = Address::generate(&e);
+    let g2 = Address::generate(&e);
+    let (client, admin, _) = setup_with_bond_and_governance(&e, &[g1.clone(), g2.clone()], 5100, 1);
+
+    client.propose_slash(&admin, &50_i128);
+    client.governance_vote(&g1, &0_u64, &true);
+    client.governance_vote(&g2, &0_u64, &true);
+
+    let prop_before = client.get_slash_proposal(&0_u64).unwrap();
+    assert_eq!(prop_before.status, crate::governance_approval::ProposalStatus::Open);
+
+    client.execute_slash_with_governance(&admin, &0_u64);
+
+    let prop_after = client.get_slash_proposal(&0_u64).unwrap();
+    assert_eq!(prop_after.status, crate::governance_approval::ProposalStatus::Executed);
+}
+
+#[test]
+#[should_panic(expected = "proposal already executed")]
+fn test_execution_protected_across_multiple_attempts() {
+    let e = Env::default();
+    let g1 = Address::generate(&e);
+    let (client, admin, _) = setup_with_bond_and_governance(&e, &[g1.clone()], 5100, 1);
+
+    client.propose_slash(&admin, &25_i128);
+    client.governance_vote(&g1, &0_u64, &true);
+
+    // First execution succeeds
+    client.execute_slash_with_governance(&admin, &0_u64);
+
+    // Try to execute a third time (second attempt already fails)
+    client.execute_slash_with_governance(&admin, &0_u64);
+}
+
+#[test]
+fn test_cancel_then_requeue_separate_proposals() {
+    let e = Env::default();
+    let g1 = Address::generate(&e);
+    let g2 = Address::generate(&e);
+    let (client, admin, _) = setup_with_bond_and_governance(&e, &[g1.clone(), g2.clone()], 5100, 1);
+
+    // Proposal 1: Create, vote, and execute
+    client.propose_slash(&admin, &30_i128);
+    client.governance_vote(&g1, &0_u64, &true);
+    client.governance_vote(&g2, &0_u64, &true);
+    client.execute_slash_with_governance(&admin, &0_u64);
+
+    // Verify first proposal is executed
+    let prop1 = client.get_slash_proposal(&0_u64).unwrap();
+    assert_eq!(prop1.status, crate::governance_approval::ProposalStatus::Executed);
+
+    // Proposal 2: Create new proposal with different ID
+    client.propose_slash(&admin, &40_i128);
+    client.governance_vote(&g1, &1_u64, &true);
+    client.governance_vote(&g2, &1_u64, &true);
+    client.execute_slash_with_governance(&admin, &1_u64);
+
+    // Verify second proposal is executed
+    let prop2 = client.get_slash_proposal(&1_u64).unwrap();
+    assert_eq!(prop2.status, crate::governance_approval::ProposalStatus::Executed);
+
+    // Attempt to re-execute first proposal should fail
+    assert!(std::panic::catch_unwind(|| {
+        client.execute_slash_with_governance(&admin, &0_u64);
+    }).is_err());
+}
+
+#[test]
+#[should_panic(expected = "proposal already executed")]
+fn test_no_execution_after_rejection_then_second_attempt() {
+    let e = Env::default();
+    let g1 = Address::generate(&e);
+    let g2 = Address::generate(&e);
+    let g3 = Address::generate(&e);
+    let (client, admin, _) = setup_with_bond_and_governance(&e, &[g1.clone(), g2.clone(), g3.clone()], 6700, 3);
+
+    client.propose_slash(&admin, &75_i128);
+
+    // Only one vote (need 2+ for quorum at 6700), so it will be rejected
+    client.governance_vote(&g1, &0_u64, &true);
+
+    // First execution attempt will reject the proposal
+    let result = client.execute_slash_with_governance(&admin, &0_u64);
+    assert!(!result);  // Should return false (rejected)
+
+    // Even though it was rejected, the executed flag should prevent repeated attempts
+    // This ensures atomicity and prevents state confusion
+    client.execute_slash_with_governance(&admin, &0_u64);
+}
+
+#[test]
+fn test_execution_state_atomic_across_multiple_calls() {
+    let e = Env::default();
+    let g1 = Address::generate(&e);
+    let g2 = Address::generate(&e);
+    let (client, admin, _) = setup_with_bond_and_governance(&e, &[g1.clone(), g2.clone()], 5100, 1);
+
+    // Setup and execute first proposal
+    client.propose_slash(&admin, &100_i128);
+    client.governance_vote(&g1, &0_u64, &true);
+    client.governance_vote(&g2, &0_u64, &true);
+    let bond1 = client.execute_slash_with_governance(&admin, &0_u64);
+    let slash1 = bond1.slashed_amount;
+
+    // Setup and execute second proposal
+    client.propose_slash(&admin, &50_i128);
+    client.governance_vote(&g1, &1_u64, &true);
+    client.governance_vote(&g2, &1_u64, &true);
+    let bond2 = client.execute_slash_with_governance(&admin, &1_u64);
+    let slash2 = bond2.slashed_amount;
+
+    // Verify slashes accumulated correctly (no duplicates)
+    assert_eq!(slash2, slash1 + 50);
+}

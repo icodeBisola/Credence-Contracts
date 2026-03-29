@@ -57,6 +57,10 @@ fn key_min_governors() -> crate::DataKey {
     crate::DataKey::GovernanceMinGovernors
 }
 
+fn key_executed(proposal_id: u64) -> crate::DataKey {
+    crate::DataKey::GovernanceProposalExecuted(proposal_id)
+}
+
 fn is_governor(governors: &Vec<Address>, addr: &Address) -> bool {
     for g in governors.iter() {
         if g == addr.clone() {
@@ -219,16 +223,41 @@ pub fn is_approved(e: &Env, proposal_id: u64) -> bool {
     quorum_ok && majority_approve
 }
 
+/// Check if a proposal has already been executed (prevents duplicate execution).
+fn is_already_executed(e: &Env, proposal_id: u64) -> bool {
+    e.storage()
+        .instance()
+        .get::<_, bool>(&key_executed(proposal_id))
+        .unwrap_or(false)
+}
+
+/// Mark a proposal as executed atomically. Called BEFORE external state changes.
+fn mark_as_executed(e: &Env, proposal_id: u64) {
+    e.storage()
+        .instance()
+        .set(&key_executed(proposal_id), &true);
+}
+
 /// Execute slash for an approved proposal. Returns true if executed.
+/// Enforces single execution with executed flag set BEFORE status changes.
 pub fn execute_slash_if_approved(e: &Env, proposal_id: u64) -> bool {
+    // Step 1: Check if already executed (prevents duplicate execution)
+    if is_already_executed(e, proposal_id) {
+        panic!("proposal already executed");
+    }
+
     let mut proposal: SlashProposal = e
         .storage()
         .instance()
         .get(&key_proposal(proposal_id))
         .unwrap_or_else(|| panic!("proposal not found"));
+
+    // Step 2: Verify proposal is still open
     if proposal.status != ProposalStatus::Open {
         panic!("proposal already closed");
     }
+
+    // Step 3a: If not approved, mark as rejected
     if !is_approved(e, proposal_id) {
         proposal.status = ProposalStatus::Rejected;
         e.storage()
@@ -243,10 +272,18 @@ pub fn execute_slash_if_approved(e: &Env, proposal_id: u64) -> bool {
         );
         return false;
     }
+
+    // Step 3b: CRITICAL - Set executed flag BEFORE changing status (reduces reentrancy risk)
+    // This ensures that even if the status update fails, we won't execute twice
+    mark_as_executed(e, proposal_id);
+
+    // Step 4: Update proposal status to executed
     proposal.status = ProposalStatus::Executed;
     e.storage()
         .instance()
         .set(&key_proposal(proposal_id), &proposal);
+
+    // Step 5: Emit execution event
     emit_governance_event(
         e,
         "slash_proposal_executed",
@@ -254,8 +291,10 @@ pub fn execute_slash_if_approved(e: &Env, proposal_id: u64) -> bool {
         &proposal.proposed_by,
         proposal.amount,
     );
+
     true
 }
+
 
 /// Get proposal by id.
 pub fn get_proposal(e: &Env, proposal_id: u64) -> Option<SlashProposal> {

@@ -133,6 +133,8 @@ pub enum DataKey {
     TotalLiquidity,
     /// Redemption configuration (min reserve, max amount)
     RedeemConfig,
+    /// Tracks whether a governance proposal has been executed (prevents duplicates)
+    GovernanceProposalExecuted(u64),
 }
 
 #[contract]
