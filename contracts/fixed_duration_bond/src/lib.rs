@@ -19,7 +19,7 @@ mod types;
 
 use credence_math::{add_i128, split_bps};
 use errors::*;
-use types::{DataKey, FeeConfig, FixedBond};
+use types::{DataKey, FeeConfig, FixedBond, OracleSafety};
 
 use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, Symbol};
 
@@ -69,6 +69,16 @@ fn apply_bps(amount: i128, bps: u32) -> (i128, i128) {
         "fee bps division overflow",
         "fee net underflow",
     )
+}
+
+#[inline]
+fn validate_oracle_answer(answer: i128, safety: &OracleSafety) {
+    if answer <= 0 {
+        panic!("{}", ERR_ORACLE_ANSWER_NON_POSITIVE);
+    }
+    if answer < safety.min_answer || answer > safety.max_answer {
+        panic!("{}", ERR_ORACLE_ANSWER_OUT_OF_RANGE);
+    }
 }
 
 // ─── Contract ──────────────────────────────────────────────────────────────
@@ -122,6 +132,35 @@ impl FixedDurationBond {
             .set(&DataKey::PenaltyBps, &base_penalty_bps);
     }
 
+    /// Set per-asset oracle safety bounds.
+    ///
+    /// Bounds are inclusive and must satisfy:
+    /// - `min_answer` > 0
+    /// - `max_answer` >= `min_answer`
+    pub fn set_oracle_safety(
+        e: Env,
+        admin: Address,
+        asset: Address,
+        min_answer: i128,
+        max_answer: i128,
+    ) {
+        require_admin(&e, &admin);
+        if min_answer <= 0 || max_answer < min_answer {
+            panic!("{}", ERR_ORACLE_BOUNDS_INVALID);
+        }
+        let safety = OracleSafety {
+            min_answer,
+            max_answer,
+        };
+        e.storage()
+            .instance()
+            .set(&DataKey::OracleSafety(asset.clone()), &safety);
+        e.events().publish(
+            (Symbol::new(&e, "oracle_safety_set"), asset),
+            (min_answer, max_answer),
+        );
+    }
+
     /// Collect all accrued creation fees to the admin or treasury.
     /// Transfers the fee balance to `recipient` and resets the counter.
     pub fn collect_fees(e: Env, admin: Address, recipient: Address) -> i128 {
@@ -146,6 +185,25 @@ impl FixedDurationBond {
             (admin, recipient, accrued),
         );
         accrued
+    }
+
+    /// Converts `amount` of `asset` into quote value using an oracle answer.
+    ///
+    /// Reverts unless:
+    /// - oracle safety is configured for this asset
+    /// - answer is strictly positive
+    /// - answer is within the configured min/max bounds
+    pub fn quote_value(e: Env, asset: Address, amount: i128, oracle_answer: i128) -> i128 {
+        if amount <= 0 {
+            panic!("{}", ERR_INVALID_AMOUNT);
+        }
+        let safety: OracleSafety = e
+            .storage()
+            .instance()
+            .get(&DataKey::OracleSafety(asset))
+            .unwrap_or_else(|| panic!("{}", ERR_ORACLE_SAFETY_NOT_SET));
+        validate_oracle_answer(oracle_answer, &safety);
+        checked_mul_i128(amount, oracle_answer, ERR_VALUATION_OVERFLOW)
     }
 
     // ── Bond lifecycle ─────────────────────────────────────────────────────
