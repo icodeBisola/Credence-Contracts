@@ -17,6 +17,8 @@ pub mod governance_approval;
 mod leverage;
 #[allow(dead_code)]
 mod math;
+#[allow(dead_code)]
+mod monotonic_interest_index;
 mod nonce;
 mod parameters;
 pub mod pausable;
@@ -1444,6 +1446,8 @@ mod test_verifier;
 mod test_weighted_attestation;
 #[cfg(test)]
 mod test_withdraw_bond;
+#[cfg(test)]
+mod test_monotonic_interest_index;
 #[cfg(test)]
 mod test_grace_window; // new test module from your commit
 #[cfg(test)]
