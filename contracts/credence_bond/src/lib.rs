@@ -22,6 +22,7 @@ mod monotonic_interest_index;
 mod nonce;
 mod parameters;
 pub mod pausable;
+pub mod redeem;
 pub mod rolling_bond;
 #[allow(dead_code)]
 mod slash_history;
@@ -128,6 +129,10 @@ pub enum DataKey {
     PauseApprovalCount(u64),
     BondToken,
     GraceWindow, // FIX 1: added for configurable post-expiry grace window
+    /// Total available liquidity for redemptions
+    TotalLiquidity,
+    /// Redemption configuration (min reserve, max amount)
+    RedeemConfig,
 }
 
 #[contract]
@@ -1524,6 +1529,8 @@ mod test_pausable;
 mod test_reentrancy;
 #[cfg(test)]
 mod test_replay_prevention;
+#[cfg(test)]
+mod test_redeem;
 #[cfg(test)]
 mod test_rolling_bond;
 #[cfg(test)]
